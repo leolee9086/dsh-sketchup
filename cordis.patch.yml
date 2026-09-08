@@ -1,0 +1,17 @@
+# DSH web-profile layer for the local SketchUp 2024 bridge.
+#
+# The route accepts only loopback clients presenting the extension's dedicated
+# sketchup:// Origin. Plugin write/load tools require confirm=true on each call;
+# these booleans remain direct deployment kill switches rather than environment
+# variables that both processes must inherit.
+
+- insert:
+    - id: bridge-sketchup
+      name: '@yuxianglin/dsh-bridge-sketchup'
+      config:
+        toolTimeoutMs: 90000
+        maxHistoryEvents: 200
+        maxEventPayloadBytes: 65536
+        maxResultChars: 120000
+        allowPluginWrite: true
+        allowPluginLoad: true
