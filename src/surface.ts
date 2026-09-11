@@ -8,6 +8,7 @@
  * replacing the DSH conversation UI or duplicating its session protocol.
  */
 
+import { cefPolyfillSource } from './generated/cef-polyfills.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-connection'
@@ -311,9 +312,27 @@ function surfaceScript(options: WebViewSurfaceOptions): string {
     ? instanceId.slice(instanceIdPrefix.length, instanceIdPrefix.length + 8)
     : instanceId.slice(0, 8);
 
-  // SketchUp 2024 embeds Chromium 112. DSH's current client runtime uses these
-  // newer platform APIs, so install spec-shaped shims before its module graph
-  // evaluates. They are no-ops in browsers that already implement the APIs.
+  // Compile the maintained stable polyfills to Chromium 80 syntax. This runs
+  // synchronously in the native window, before any DSH module can use Iterator.
+  const checks = {
+    Iterator: () => typeof globalThis.Iterator === 'function',
+    'Iterator.from': () => typeof globalThis.Iterator?.from === 'function',
+    'Iterator.map': () => typeof globalThis.Iterator?.prototype?.map === 'function',
+    'Array.toSorted': () => typeof Array.prototype.toSorted === 'function',
+    'Set.union': () => typeof Set.prototype.union === 'function',
+    'Object.groupBy': () => typeof Object.groupBy === 'function',
+    'Promise.withResolvers': () => typeof Promise.withResolvers === 'function',
+    'RegExp.escape': () => typeof RegExp.escape === 'function',
+  };
+  const missingBefore = Object.keys(checks).filter(key => !checks[key]());
+  ${cefPolyfillSource}
+  Object.defineProperty(window, '__DSH_CEF_COMPAT__', {
+    configurable: true,
+    value: { library: 'core-js/stable', missingBefore,
+      missingAfter: Object.keys(checks).filter(key => !checks[key]()) },
+  });
+
+  // Web APIs outside core-js: keep AbortSignal.any before the module graph.
   if (typeof Promise === 'function' && typeof Promise.withResolvers !== 'function') {
     Object.defineProperty(Promise, 'withResolvers', {
       configurable: true,
@@ -390,7 +409,8 @@ function surfaceScript(options: WebViewSurfaceOptions): string {
   window.dispatchEvent(new CustomEvent('dsh-webview-surface', { detail: { instanceId, label, surfaceId } }));
 
   const originalFetch = window.fetch.bind(window);
-  const bound = new Set();
+  // Only coalesce in-flight binds. A successful bind is not a permanent lease:
+  // the host can restart, disconnect, or accept a bind from another WebView.
   const pending = new Map();
   const sessionIdFrom = (value, depth = 0) => {
     if (depth > 5 || value === null || typeof value !== 'object') return null;
@@ -413,66 +433,98 @@ function surfaceScript(options: WebViewSurfaceOptions): string {
     if (text === null || text.length === 0) return null;
     try { return JSON.parse(text); } catch { return null; }
   };
-  const bind = async (sessionId) => {
-    if (bound.has(sessionId)) return;
+  const bind = (sessionId) => {
     const existing = pending.get(sessionId);
     if (existing) return existing;
-    const task = (async () => {
-      try {
-        const response = await originalFetch(bindPath, {
-          method: 'POST', credentials: 'same-origin',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId, instanceId }),
-        });
-        if (!response.ok) return;
-        bound.add(sessionId);
-      } catch { /* the DSH request remains authoritative */ }
-      finally { pending.delete(sessionId); }
-    })();
+    // Start in a microtask so even a synchronous fetch failure is removed only
+    // after this task has been registered in pending.
+    const task = Promise.resolve().then(async () => {
+      const response = await originalFetch(bindPath, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, instanceId }),
+      });
+      if (!response.ok) throw new Error(label + ' session binding failed (HTTP ' + response.status + ')');
+      const result = await response.json();
+      if (!result || result.ok !== true || result.sessionId !== sessionId || result.instanceId !== instanceId) {
+        throw new Error(label + ' session binding returned an invalid acknowledgement');
+      }
+    }).finally(() => { pending.delete(sessionId); });
     pending.set(sessionId, task);
     return task;
   };
   window.fetch = async (input, init) => {
-    const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    // Also accept URL objects created before core-js replaced the constructor.
+    const isUrl = typeof input !== 'string' && (input instanceof URL || typeof input.href === 'string');
+    const rawUrl = typeof input === 'string' ? input : isUrl ? input.href : input.url;
     const url = new URL(rawUrl, location.href);
-    const method = (init?.method || (typeof input !== 'string' && !(input instanceof URL) ? input.method : 'GET')).toUpperCase();
-    const isSessionRpc = url.pathname.startsWith('/api/session/') && method === 'POST';
+    const method = (init?.method || (typeof input !== 'string' && !isUrl ? input.method : 'GET')).toUpperCase();
+    const isSessionRpc = url.origin === location.origin && url.pathname.startsWith('/api/session/') && method === 'POST';
     const requestBody = isSessionRpc ? await bodyObject(input, init) : null;
     const knownSession = requestBody ? sessionIdFrom(requestBody) : null;
     if (knownSession) await bind(knownSession);
     const response = await originalFetch(input, init);
-    if (isSessionRpc && url.pathname.endsWith('/create')) {
-      try {
-        const created = await response.clone().json();
-        const createdSession = sessionIdFrom(created);
-        if (createdSession) await bind(createdSession);
-      } catch { /* retain the original response for the DSH client */ }
+    if (isSessionRpc && response.ok && url.pathname.endsWith('/create')) {
+      let createdSession = null;
+      try { createdSession = sessionIdFrom(await response.clone().json()); }
+      catch { /* leave malformed RPC responses to the DSH client */ }
+      // Binding errors must reject fetch, including after a Session is created.
+      if (createdSession) await bind(createdSession);
     }
     return response;
   };
 
-  // Session follow/page streams can be opened before their first unary call.
-  // Delay only the first Remote mux frame until its Session binding is sent;
-  // unrelated WebSockets retain their native behavior.
+  // Session follow/page streams can precede the first unary call. Hold each
+  // stream's open and subsequent frames together until binding succeeds; a
+  // cancel before then must never leave a delayed, orphaned open on the host.
   try {
     const socketPrototype = window.WebSocket && window.WebSocket.prototype;
     const nativeSend = socketPrototype && socketPrototype.send;
     if (socketPrototype && typeof nativeSend === 'function' && !socketPrototype.__dshSurfacePatched) {
+      const socketQueues = new WeakMap();
       socketPrototype.send = function(data) {
-        let sessionId = null;
+        // Preserve native send behavior for CONNECTING/CLOSING/CLOSED sockets.
+        if (this.readyState !== 1) return nativeSend.call(this, data);
+        let frame = null;
         try {
           const socketUrl = new URL(this.url, location.href);
-          if (socketUrl.pathname === '/api/remote.mux' && typeof data === 'string') {
-            const frame = JSON.parse(data);
-            if (frame && frame.type === 'open') sessionId = sessionIdFrom(frame.payload);
+          if (socketUrl.origin === location.origin.replace(/^http/, 'ws')
+            && socketUrl.pathname === '/api/remote.mux' && typeof data === 'string') {
+            frame = JSON.parse(data);
           }
-        } catch { sessionId = null; }
-        if (sessionId) {
-          const socket = this;
-          void bind(sessionId).then(() => nativeSend.call(socket, data), () => nativeSend.call(socket, data));
+        } catch { frame = null; }
+        if (!frame || typeof frame.streamId !== 'string') return nativeSend.call(this, data);
+        let streams = socketQueues.get(this);
+        const queued = streams && streams.get(frame.streamId);
+        if (queued) {
+          if (frame.type === 'cancel') streams.delete(frame.streamId);
+          else queued.push(data);
           return;
         }
-        return nativeSend.call(this, data);
+        const sessionId = frame.type === 'open' ? sessionIdFrom(frame.payload) : null;
+        if (!sessionId) return nativeSend.call(this, data);
+        const socket = this;
+        if (!streams) {
+          streams = new Map();
+          socketQueues.set(socket, streams);
+          socket.addEventListener('close', () => streams.clear(), { once: true });
+        }
+        const queue = [data];
+        streams.set(frame.streamId, queue);
+        void bind(sessionId).then(() => {
+          if (streams.get(frame.streamId) !== queue) return;
+          if (socket.readyState === 1) {
+            for (const item of queue) nativeSend.call(socket, item);
+          }
+          streams.delete(frame.streamId);
+        }).catch(() => {
+          // A canceled/closed stream needs no failure signal. Otherwise close
+          // the carrier so the actual mux client rejects its waiting streams.
+          if (streams.get(frame.streamId) !== queue) return;
+          streams.clear();
+          if (socket.readyState === 1) socket.close(4003, 'WebView session binding failed');
+        });
+        return;
       };
       Object.defineProperty(socketPrototype, '__dshSurfacePatched', { value: true, configurable: false });
     }
@@ -482,7 +534,7 @@ function surfaceScript(options: WebViewSurfaceOptions): string {
     if (document.getElementById(stripId)) return;
     const strip = document.createElement('div');
     strip.id = stripId;
-    strip.textContent = label + ' - ' + shortInstanceId;
+    strip.textContent = label + ' - checking connection';
     strip.title = 'Bound ' + label + ' instance ' + instanceId;
     strip.style.cssText = 'position:fixed;top:8px;right:12px;z-index:2147483647;pointer-events:none;box-sizing:border-box;padding:5px 9px;border:1px solid rgba(127,127,127,.35);border-radius:6px;background:rgba(20,24,30,.88);color:#f4f6f8;font:12px/16px system-ui,sans-serif;letter-spacing:0;box-shadow:0 2px 8px rgba(0,0,0,.22)';
     document.body.appendChild(strip);
@@ -490,15 +542,21 @@ function surfaceScript(options: WebViewSurfaceOptions): string {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', renderStrip, { once: true });
   else renderStrip();
 
+  let connected = false;
+  const updateStatus = () => {
+    const strip = document.getElementById(stripId);
+    if (strip) strip.textContent = label + ' - ' + (connected ? shortInstanceId : 'disconnected');
+  };
   const refreshStatus = async () => {
     try {
       const response = await originalFetch(statusPath + '?instanceId=' + encodeURIComponent(instanceId), { credentials: 'same-origin' });
-      const status = await response.json();
-      const strip = document.getElementById(stripId);
-      if (strip && status && status.connected !== false) strip.textContent = label + ' - ' + shortInstanceId;
-      if (strip && status && status.connected === false) strip.textContent = label + ' - disconnected';
-    } catch { /* the DSH app remains usable while the status poll retries */ }
+      const status = response.ok ? await response.json() : null;
+      connected = !!status && status.connected === true;
+    } catch { connected = false; }
+    updateStatus();
   };
+  // A poll can finish before the strip exists while the document is loading.
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', updateStatus, { once: true });
   void refreshStatus();
   if (typeof window.setInterval === 'function') window.setInterval(refreshStatus, 5000);
 })();`

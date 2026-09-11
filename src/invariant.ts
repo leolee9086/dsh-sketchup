@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 
-const PACKAGE_NAME = '@yuxianglin/dsh-bridge-sketchup'
+const PACKAGE_NAME = '@leolee9086/dsh-sketchup'
 
 /** Loader-visible companion name. */
 export const name = 'bridge-sketchup-invariant'

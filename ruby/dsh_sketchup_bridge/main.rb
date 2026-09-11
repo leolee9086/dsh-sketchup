@@ -34,6 +34,8 @@ module DSHSketchupBridge
   end
 
   class Manager
+    MAX_QUEUED_TOOLS = 256
+
     attr_reader :max_history_events, :instance_id
 
     def initialize
@@ -323,11 +325,17 @@ module DSHSketchupBridge
           log("connecting")
           client.connect
           log("WebSocket upgrade complete")
-          @client_mutex.synchronize do
-            @client = client
-            @connected = false
-            @host_caps = nil
+          accepted = @client_mutex.synchronize do
+            if active_run?(run_generation)
+              @client = client
+              @connected = false
+              @host_caps = nil
+              true
+            else
+              false
+            end
           end
+          break unless accepted
           client.send_json(hello_frame)
           log("hello sent")
           delay = 1
@@ -339,14 +347,7 @@ module DSHSketchupBridge
         rescue Exception => error
           log("connection error: #{error.class}: #{error.message}") if active_run?(run_generation)
         ensure
-          client.close unless client.nil?
-          @client_mutex.synchronize do
-            if @client.equal?(client)
-              @client = nil
-              @connected = false
-              @host_caps = nil
-            end
-          end
+          disconnect_client(client) unless client.nil?
         end
         break unless active_run?(run_generation)
         sleep(delay)
@@ -376,12 +377,30 @@ module DSHSketchupBridge
       }
     end
 
+    # Invalidate first, then close IO and purge only this socket's work. Another
+    # worker from a stop/start cycle must not clear a newer connection's queue.
+    def disconnect_client(client)
+      @client_mutex.synchronize do
+        if @client.equal?(client)
+          @client = nil
+          @connected = false
+          @host_caps = nil
+        end
+      end
+      client.close
+      @queue_mutex.synchronize do
+        @queue.delete_if { |source, _frame| source.equal?(client) }
+        @cancelled.delete_if { |key, _value| key[0].equal?(client) }
+      end
+    end
+
     def handle_server_frame(client, frame)
-      return unless frame.is_a?(Hash)
+      return unless frame.is_a?(Hash) && current_client?(client)
       case frame["t"]
       when "hello.ok"
         @client_mutex.synchronize do
-          @connected = @client.equal?(client)
+          return unless @client.equal?(client)
+          @connected = true
           @host_caps = frame["caps"]
         end
         record_event("bridge.connected", { "hostCaps" => @host_caps || {} })
@@ -389,9 +408,11 @@ module DSHSketchupBridge
       when "ping"
         client.send_json({ "t" => "pong" })
       when "tool.call"
-        enqueue_tool(frame)
+        enqueue_tool(client, frame) if ready_client?(client)
       when "tool.cancel"
-        @queue_mutex.synchronize { @cancelled[frame["id"].to_s] = true }
+        key = [client, frame["id"].to_s]
+        # Ignore unknown/completed ids instead of retaining cancellations forever.
+        @queue_mutex.synchronize { @cancelled[key] = true if @cancelled.key?(key) }
       when "error"
         log("Host error #{frame["code"]}: #{frame["message"]}")
       end
@@ -399,13 +420,21 @@ module DSHSketchupBridge
       log("frame handling failed: #{error.class}: #{error.message}")
     end
 
-    def enqueue_tool(frame)
+    def enqueue_tool(client, frame)
       id = frame["id"].to_s
       return if id.empty?
-      @queue_mutex.synchronize do
-        return if @queue.any? { |queued| queued["id"].to_s == id }
-        @queue << frame
+      key = [client, id]
+      overflow = @queue_mutex.synchronize do
+        return if @cancelled.key?(key)
+        if @queue.length >= MAX_QUEUED_TOOLS
+          true
+        else
+          @cancelled[key] = false
+          @queue << [client, frame]
+          false
+        end
       end
+      disconnect_client(client) if overflow
     end
 
     def drain_queue
@@ -414,62 +443,66 @@ module DSHSketchupBridge
         @queue = []
         value
       end
-      batch.each { |frame| process_tool_call(frame) }
+      batch.each { |client, frame| process_tool_call(client, frame) }
     rescue Exception => error
       log("UI queue failed: #{error.class}: #{error.message}")
     end
 
-    def process_tool_call(frame)
+    def process_tool_call(client, frame)
       id = frame["id"].to_s
-      if expired?(frame) || cancelled?(id)
-        send_tool_error(id, "bridge-closed", "SketchUp tool call expired or was cancelled")
-        clear_cancelled(id)
-        return
-      end
-      args = frame["args"].is_a?(Hash) ? frame["args"] : {}
+      key = [client, id]
       begin
+        # Test at dispatch time as well as enqueue time: a timer may already
+        # have taken its batch when the reader detects a disconnect. Once native
+        # execution starts it cannot be interrupted or rolled back by transport.
+        return unless ready_client?(client)
+        if expired?(frame) || cancelled?(key)
+          send_tool_error(client, id, "bridge-closed", "SketchUp tool call expired or was cancelled")
+          return
+        end
+        args = frame["args"].is_a?(Hash) ? frame["args"] : {}
         result = @adapter.dispatch(frame["name"].to_s, args)
-        if cancelled?(id)
-          send_tool_error(id, "bridge-closed", "SketchUp tool call was cancelled")
+        if cancelled?(key)
+          send_tool_error(client, id, "bridge-closed", "SketchUp tool call was cancelled")
         else
-          send_tool_result(id, result)
+          send_tool_result(client, id, result)
         end
       rescue PermissionError => error
-        send_tool_error(id, "not-enabled", error.message)
+        send_tool_error(client, id, "not-enabled", error.message)
       rescue ArgumentError => error
-        send_tool_error(id, "bad-args", error.message)
+        send_tool_error(client, id, "bad-args", error.message)
       rescue Exception => error
-        send_tool_error(id, "action-failed", "#{error.class}: #{error.message}")
+        send_tool_error(client, id, "action-failed", "#{error.class}: #{error.message}")
         log("tool #{frame["name"]} failed: #{error.class}: #{error.message}")
       ensure
-        clear_cancelled(id)
+        @queue_mutex.synchronize { @cancelled.delete(key) }
       end
     end
 
     def expired?(frame)
       value = frame["expiresAt"]
-      value.is_a?(Numeric) && Time.now.to_f * 1000 >= value.to_f
+      !value.is_a?(Numeric) || !value.finite? || Time.now.to_f * 1000 >= value.to_f
     end
 
-    def cancelled?(id)
-      @queue_mutex.synchronize { @cancelled[id] == true }
+    def cancelled?(key)
+      @queue_mutex.synchronize { @cancelled[key] == true }
     end
 
-    def clear_cancelled(id)
-      @queue_mutex.synchronize { @cancelled.delete(id) }
+    def ready_client?(client)
+      @client_mutex.synchronize do
+        @running && @connected && !client.nil? && @client.equal?(client) && client.open?
+      end
     end
 
-    def send_tool_result(id, result)
-      client = current_client
-      return if client.nil? || !connected?
+    def send_tool_result(client, id, result)
+      return unless ready_client?(client)
       client.send_json({ "t" => "tool.result", "id" => id, "ok" => true, "result" => result })
     rescue Exception => error
       log("tool result send failed: #{error.class}: #{error.message}")
     end
 
-    def send_tool_error(id, code, message)
-      client = current_client
-      return if client.nil? || !connected?
+    def send_tool_error(client, id, code, message)
+      return unless ready_client?(client)
       client.send_json({ "t" => "tool.result", "id" => id, "ok" => false, "error" => { "code" => code, "message" => message } })
     rescue Exception => error
       log("tool error send failed: #{error.class}: #{error.message}")

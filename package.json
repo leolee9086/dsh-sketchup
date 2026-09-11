@@ -1,8 +1,20 @@
 {
-  "name": "@yuxianglin/dsh-bridge-sketchup",
-  "description": "Loopback WebSocket bridge between DSH and SketchUp 2024 Ruby",
-  "version": "0.1.0",
-  "author": "Yuxiang Lin",
+  "name": "@leolee9086/dsh-sketchup",
+  "description": "Local DeepSeek Harness integration for SketchUp 2024",
+  "version": "0.1.0-alpha.1",
+  "keywords": ["dsh-plugin", "deepseek-harness", "sketchup", "cordis", "ruby", "websocket", "cef"],
+  "author": "leolee9086",
+  "contributors": [
+    "Yuxiang Lin and dsh-browser contributors (upstream)"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leolee9086/dsh-sketchup.git"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "packageManager": "pnpm@11.7.0",
   "license": "MIT",
   "private": false,
   "type": "module",
@@ -32,7 +44,12 @@
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "src",
-    "ruby"
+    "ruby",
+    "scripts",
+    "install.ps1",
+    "install.sh",
+    "THIRD-PARTY",
+    "docs"
   ],
   "dsh": {
     "bundle": {
@@ -51,11 +68,13 @@
     "ws": "^8.21.0"
   },
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc -b --pretty false",
-    "build": "tsc -b --pretty false && tsdown"
+    "build:cef": "node scripts/build-cef-polyfills.mjs",
+    "test": "node scripts/build-cef-polyfills.mjs && vitest run",
+    "typecheck": "node scripts/build-cef-polyfills.mjs && tsc -b --pretty false",
+    "build": "node scripts/build-cef-polyfills.mjs && tsc -b --pretty false && tsdown"
   },
   "devDependencies": {
+    "core-js": "^3.50.0",
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/cordis-plugin-include": "1.0.6",
     "@deepseek-ai/cordis-plugin-loader": "1.0.2",
@@ -66,6 +85,7 @@
     "@deepseek-ai/dsh-tools": "^0.1.2-alpha.2",
     "@types/node": "^22.20.0",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
     "tsdown": "0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

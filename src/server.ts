@@ -528,8 +528,8 @@ export class SketchupBridgeServer {
 function cloneJson(value: JsonValue | { truncated: true; bytes: number }): JsonValue | { truncated: true; bytes: number } {
   if (typeof value !== 'object' || value === null) return value
   if (Array.isArray(value)) return value.map(item => cloneJson(item as JsonValue)) as JsonValue[]
-  if ('truncated' in value) return { truncated: true, bytes: value.bytes }
-  const out: Record<string, JsonValue> = {}
+  // An event may itself contain a legitimate `truncated` field; copy every key.
+  const out: Record<string, JsonValue> = Object.create(null)
   for (const [key, child] of Object.entries(value)) out[key] = cloneJson(child as JsonValue) as JsonValue
   return out
 }

@@ -1,0 +1,3 @@
+# core-js postinstall only prints funding information; never execute it here.
+allowBuilds:
+  core-js: false

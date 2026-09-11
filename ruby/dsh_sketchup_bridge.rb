@@ -3,6 +3,10 @@
 require "sketchup.rb"
 require "extensions.rb"
 require "time"
+require File.join(__dir__, "dsh_sketchup_bridge", "setup")
+
+# Register setup independently of the bridge connection or main extension load.
+DSHSketchupBridge::HostSetup.register_menu
 
 module DSHSketchupBridge
   # Startup errors otherwise surface only in SketchUp's Ruby Console. Keep a
@@ -25,8 +29,8 @@ module DSHSketchupBridge
       "dsh_sketchup_bridge/main"
     )
     extension.description = "Connects SketchUp to the local DeepSeek Harness bridge."
-    extension.version = "0.1.0"
-    extension.creator = "DSH"
+    extension.version = "0.1.0-alpha.1"
+    extension.creator = "leolee9086; upstream Yuxiang Lin / dsh-browser contributors"
 
     Sketchup.register_extension(extension, true)
     boot_log("extension registered")

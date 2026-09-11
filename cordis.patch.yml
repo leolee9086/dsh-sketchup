@@ -7,11 +7,11 @@
 
 - insert:
     - id: bridge-sketchup
-      name: '@yuxianglin/dsh-bridge-sketchup'
+      name: '@leolee9086/dsh-sketchup'
       config:
         toolTimeoutMs: 90000
         maxHistoryEvents: 200
         maxEventPayloadBytes: 65536
         maxResultChars: 120000
-        allowPluginWrite: true
-        allowPluginLoad: true
+        allowPluginWrite: false
+        allowPluginLoad: false

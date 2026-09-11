@@ -18,7 +18,7 @@ import WebSocket from 'ws'
 import * as BridgeSketchup from '../src/index.ts'
 import { SKETCHUP_BRIDGE_ORIGIN } from '../src/protocol.ts'
 
-const BRIDGE = '@yuxianglin/dsh-bridge-sketchup'
+const BRIDGE = '@leolee9086/dsh-sketchup'
 
 let root: string | undefined
 let context: Context | undefined

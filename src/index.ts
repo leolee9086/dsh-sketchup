@@ -1,5 +1,5 @@
 /**
- * `@yuxianglin/dsh-bridge-sketchup`: local DSH integration for SketchUp 2024.
+ * `@leolee9086/dsh-sketchup`: local DSH integration for SketchUp 2024.
  *
  * The Host half owns the loopback/Origin-gated WebSocket carrier and model-facing
  * tools. A separate Ruby extension in SketchUp owns all SketchUp API calls.

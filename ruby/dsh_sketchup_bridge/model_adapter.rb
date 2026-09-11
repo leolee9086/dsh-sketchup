@@ -5,6 +5,8 @@
 # object directly, because most SketchUp Ruby API calls are not thread-safe.
 require "fileutils"
 require "json"
+require "tempfile"
+require "securerandom"
 
 module DSHSketchupBridge
   class ModelAdapter
@@ -265,7 +267,8 @@ module DSHSketchupBridge
 
     def write_plugin(args)
       raise ArgumentError, "confirm=true is required for plugin writes" unless args["confirm"] == true
-      require_plugin_gate!(false)
+      # Validate all requested capabilities before making any filesystem change.
+      require_plugin_gate!(args["load"] == true)
       plugin_id = safe_plugin_id(args["pluginId"])
       entry_file = args["entryFile"].to_s
       code = args["code"]
@@ -274,14 +277,22 @@ module DSHSketchupBridge
       path = safe_plugin_path(plugin_id, entry_file)
       syntax_check(code, path)
       FileUtils.mkdir_p(File.dirname(path))
+      # Check newly created/existing directories again before opening anything.
+      path = safe_plugin_path(plugin_id, entry_file)
       backup = backup_file(path)
-      temporary = "#{path}.tmp-#{Process.pid}-#{Thread.current.object_id}"
-      File.open(temporary, "wb") { |file| file.write(code) }
-      FileUtils.mv(temporary, path, force: true)
+      # Tempfile uses an unpredictable name and exclusive creation, preventing
+      # a pre-existing .tmp symlink from redirecting a write outside Plugins.
+      temporary = Tempfile.create([".dsh-write-", ".tmp"], File.dirname(path))
+      temporary.binmode
+      temporary.write(code)
+      temporary.flush
+      temporary.close
+      path = safe_plugin_path(plugin_id, entry_file)
+      File.rename(temporary.path, path)
 
       loaded = false
       if args["load"] == true
-        require_plugin_gate!(true)
+        path = safe_plugin_path(plugin_id, entry_file)
         Kernel.load(path)
         loaded = true
       end
@@ -296,7 +307,10 @@ module DSHSketchupBridge
         "loaded" => loaded
       }
     ensure
-      File.delete(temporary) if defined?(temporary) && temporary && File.exist?(temporary)
+      if defined?(temporary) && temporary
+        temporary.close unless temporary.closed?
+        File.delete(temporary.path) if File.exist?(temporary.path)
+      end
     end
 
     def reload_plugin(args)
@@ -307,6 +321,7 @@ module DSHSketchupBridge
       path = safe_plugin_path(plugin_id, entry_file)
       raise "plugin file does not exist: #{entry_file}" unless File.file?(path)
       syntax_check(File.read(path, mode: "rb"), path)
+      path = safe_plugin_path(plugin_id, entry_file)
       Kernel.load(path)
       @manager.record_event("plugin.reloaded", { "pluginId" => plugin_id, "entryFile" => entry_file })
       { "operation" => "reload_plugin", "pluginId" => plugin_id, "entryFile" => entry_file, "path" => path, "loaded" => true }
@@ -330,28 +345,56 @@ module DSHSketchupBridge
 
     def safe_plugin_path(plugin_id, entry_file)
       relative = entry_file.to_s.tr("\\", "/")
-      parts = relative.split("/")
-      raise ArgumentError, "entryFile must be a relative .rb path" if relative.empty? || !relative.end_with?(".rb") || parts.any? { |part| part.empty? || part == "." || part == ".." || part.include?("\0") }
-      raise ArgumentError, "entryFile must stay below Plugins/#{plugin_id}" unless parts.first == plugin_id
-      # Resolve from this installed extension instead of relying on
-      # find_support_file("Plugins"), which has varied across SketchUp releases.
-      root = File.expand_path(File.join(__dir__, ".."))
-      raise "SketchUp Plugins directory could not be located" unless File.directory?(root)
-      path = File.expand_path(File.join(root, *parts))
-      prefix = root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}"
-      raise ArgumentError, "entryFile escapes the Plugins directory" unless path == root || path.downcase.start_with?(prefix.downcase)
+      parts = relative.split("/", -1)
+      # Also reject Windows aliases/streams (trailing dots/spaces, device names,
+      # colon/ADS). Lexically different names must not select the same file.
+      invalid = parts.any? do |part|
+        part.empty? || part == "." || part == ".." || part.match?(/[<>:"|?*\x00-\x1f]/) ||
+          part.end_with?(".", " ") || part.match?(/\A(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|\z)/i)
+      end
+      raise ArgumentError, "entryFile must be a relative .rb path" if invalid || !relative.end_with?(".rb")
+      raise ArgumentError, "entryFile must stay below Plugins/#{plugin_id}" unless parts.first == plugin_id && parts.length >= 2
+      # Trust the installed Plugins root, but not links/junctions below it.
+      # Resolving every existing component also detects junctions that lstat
+      # may expose as directories on Windows. Missing tail components are safe
+      # to create only after their nearest existing ancestor has been checked.
+      root = File.realpath(plugin_root)
+      path = root
+      parts.each do |part|
+        path = File.join(path, part)
+        begin
+          stat = File.lstat(path)
+        rescue Errno::ENOENT
+          next
+        end
+        raise ArgumentError, "entryFile traverses a symbolic link" if stat.symlink?
+        resolved = File.realpath(path)
+        unless comparable_path(resolved) == comparable_path(path)
+          raise ArgumentError, "entryFile traverses a redirected filesystem path"
+        end
+      end
       path
+    end
+
+    def plugin_root
+      # Kept separate so offline tests can supply a temporary Plugins directory.
+      File.expand_path(File.join(__dir__, ".."))
+    end
+
+    def comparable_path(path)
+      normalized = File.expand_path(path).tr("\\", "/")
+      File::ALT_SEPARATOR == "\\" ? normalized.downcase : normalized
     end
 
     def backup_file(path)
       return nil unless File.file?(path)
-      backup = "#{path}.bak-#{Time.now.strftime("%Y%m%d-%H%M%S-%L")}"
-      suffix = 1
-      while File.exist?(backup)
-        backup = "#{path}.bak-#{Time.now.strftime("%Y%m%d-%H%M%S-%L")}-#{suffix}"
-        suffix += 1
+      backup = "#{path}.bak-#{Time.now.strftime("%Y%m%d-%H%M%S-%L")}-#{SecureRandom.hex(8)}"
+      # Never follow an attacker-created backup link. Exclusive creation fails
+      # if the random backup name already exists instead of overwriting it.
+      File.open(backup, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |output|
+        output.binmode
+        File.open(path, "rb") { |input| IO.copy_stream(input, output) }
       end
-      FileUtils.cp(path, backup)
       backup
     end
 

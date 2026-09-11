@@ -5,3 +5,6 @@ lib/
 .env.*
 *.log
 *.bak-*
+RESUME.local.md
+release/
+src/generated/

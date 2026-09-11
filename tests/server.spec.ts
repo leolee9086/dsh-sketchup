@@ -214,11 +214,11 @@ describe('SketchupBridgeServer', () => {
     const harness = await startBridge()
     const first = await handshake(harness)
     const second = await handshake(harness, { ...CLIENT_CAPS, instanceId: 'sketchup-test-2' })
-    send(first.ws, { t: 'event', seq: 1, at: 10, name: 'first.event', payload: { source: 1 } })
+    send(first.ws, { t: 'event', seq: 1, at: 10, name: 'first.event', payload: { source: 1, truncated: false, items: [{ name: 'kept' }] } })
     send(second.ws, { t: 'event', seq: 1, at: 11, name: 'second.event', payload: { source: 2 } })
     await waitFor(() => harness.bridge.history(20, 'sketchup-test-2').length === 1)
     expect(harness.bridge.history(20, 'sketchup-test-1')).toEqual([
-      { instanceId: 'sketchup-test-1', seq: 1, at: 10, name: 'first.event', payload: { source: 1 } },
+      { instanceId: 'sketchup-test-1', seq: 1, at: 10, name: 'first.event', payload: { source: 1, truncated: false, items: [{ name: 'kept' }] } },
     ])
     expect(harness.bridge.history(20, 'sketchup-test-2')).toEqual([
       { instanceId: 'sketchup-test-2', seq: 1, at: 11, name: 'second.event', payload: { source: 2 } },
@@ -227,8 +227,8 @@ describe('SketchupBridgeServer', () => {
     first.ws.close()
     await waitFor(() => harness.bridge.status().instanceCount === 1)
     await expect(Promise.resolve().then(() => harness.bridge.requestTool(
-      'sketchup_snapshot',
-      {},
+      'sketchup_execute',
+      { operation: 'erase_selection' },
       new AbortController().signal,
       1_000,
       'session-one',
