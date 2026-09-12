@@ -91,3 +91,11 @@ ruby test-ruby/run.rb
 - **Denis Pushkarev 与 core-js 贡献者**：维护标准 JavaScript 垫片，[core-js](https://github.com/zloirock/core-js)，采用 MIT 许可证；原文保存在 [THIRD-PARTY/core-js-LICENSE](THIRD-PARTY/core-js-LICENSE)。
 
 本仓库由 leolee9086 维护独立打包、可靠性修复、安装套装和 CEF 兼容集成。上游署名完整保留，不将上游桥接代码宣称为本仓库独有原创。
+
+## 赞赏
+
+如果这个项目帮到了你，可以请我喝杯咖啡：
+
+![赞赏码](assets/sponsor-qr.png)
+
+也欢迎通过 [爱发电](https://afdian.net/a/leolee9086) 支持。
