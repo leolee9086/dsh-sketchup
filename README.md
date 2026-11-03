@@ -38,6 +38,8 @@
 dsh plugin --profile web add --save-exact ./leolee9086-dsh-sketchup-0.1.0-alpha.2.tgz
 ```
 
+tgz 安装走 pnpm 的文件符号链接，Windows 需要开发者模式或管理员权限；没有权限时会报 `EPERM ... symlink`，改用解压后的包目录安装即可（目录联接不需要特权）。`@leolee9086/dsh-sketchup` 尚未发布到 npm，目前只能从 GitHub 发布页安装。
+
 包内包含 Ruby 扩展及安装脚本。运行安装器即可将 Ruby 部分复制到 SketchUp；具体参数、备份位置和回滚方法见[安装指南](docs/installation.md)。安装脚本需要显式运行，没有隐藏的安装后自动执行步骤。
 
 目前已在 Windows + SketchUp **2024（24.0.484，Ruby 3.2.2）** 中验证桥接和内嵌聊天。其他版本尚未实测。提供 Bash 脚本并不代表 SketchUp 支持 Linux。
