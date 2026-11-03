@@ -1,7 +1,7 @@
 {
   "name": "@leolee9086/dsh-sketchup",
   "description": "Local DeepSeek Harness integration for SketchUp 2024",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "keywords": ["dsh-plugin", "deepseek-harness", "sketchup", "cordis", "ruby", "websocket", "cef"],
   "author": "leolee9086",
   "contributors": [

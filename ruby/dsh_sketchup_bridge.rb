@@ -29,7 +29,7 @@ module DSHSketchupBridge
       "dsh_sketchup_bridge/main"
     )
     extension.description = "Connects SketchUp to the local DeepSeek Harness bridge."
-    extension.version = "0.1.0-alpha.1"
+    extension.version = "0.1.0-alpha.2"
     extension.creator = "leolee9086; upstream Yuxiang Lin / dsh-browser contributors"
 
     Sketchup.register_extension(extension, true)

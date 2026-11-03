@@ -16,7 +16,7 @@ end
 DSHSketchupBridge.boot_log("main loaded")
 
 module DSHSketchupBridge
-  VERSION = "0.1.0"
+  VERSION = "0.1.0-alpha.2"
   HOST = ENV.fetch("DSH_SKETCHUP_HOST", "127.0.0.1")
   # The Host listens on the DSH web server port, which is not fixed. It writes
   # that port to a discovery file; the environment variable stays as an override.

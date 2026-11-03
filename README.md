@@ -6,13 +6,13 @@
 
 ## 下载与安装
 
-请从 [GitHub 发布页](https://github.com/leolee9086/dsh-sketchup/releases) 下载对应版本的附件。`v0.1.0-alpha.1` 为**预发布版**，兼容性仍需进一步验证。
+请从 [GitHub 发布页](https://github.com/leolee9086/dsh-sketchup/releases) 下载对应版本的附件。当前版本 `v0.1.0-alpha.2` 为**预发布版**。`v0.1.0-alpha.1` 及更早版本在 DSH 0.2.1-rc.5 上因依赖版本过旧会被安装门禁拒绝，请用 alpha.2 或更新版。
 
 | 文件 | 用途 |
 | --- | --- |
-| `dsh-sketchup-0.1.0-alpha.1.zip` | Windows 完整安装套装，内含预编译 Host 包与 Ruby 扩展 |
-| `dsh-sketchup-0.1.0-alpha.1.rbz` | 通过 SketchUp 扩展管理器安装的扩展包 |
-| `leolee9086-dsh-sketchup-0.1.0-alpha.1.tgz` | DSH 使用的预编译 Host 插件包 |
+| `dsh-sketchup-0.1.0-alpha.2.zip` | Windows 完整安装套装，内含预编译 Host 包与 Ruby 扩展 |
+| `dsh-sketchup-0.1.0-alpha.2.rbz` | 通过 SketchUp 扩展管理器安装的扩展包 |
+| `leolee9086-dsh-sketchup-0.1.0-alpha.2.tgz` | DSH 使用的预编译 Host 插件包 |
 | `bootstrap.ps1` | Ruby 安装菜单调用的 Windows 引导安装器，固定安装版本 |
 | `SHA256SUMS` | 发布附件的 SHA-256 校验和 |
 
@@ -35,7 +35,7 @@
 已有 DSH 时，可先登记下载的 Host 包：
 
 ```powershell
-dsh plugin --profile web add --save-exact ./leolee9086-dsh-sketchup-0.1.0-alpha.1.tgz
+dsh plugin --profile web add --save-exact ./leolee9086-dsh-sketchup-0.1.0-alpha.2.tgz
 ```
 
 包内包含 Ruby 扩展及安装脚本。运行安装器即可将 Ruby 部分复制到 SketchUp；具体参数、备份位置和回滚方法见[安装指南](docs/installation.md)。安装脚本需要显式运行，没有隐藏的安装后自动执行步骤。

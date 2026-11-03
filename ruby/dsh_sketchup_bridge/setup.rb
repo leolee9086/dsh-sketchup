@@ -13,7 +13,7 @@ require 'thread'
 
 module DSHSketchupBridge
   module HostSetup
-    RELEASE_VERSION = '0.1.0-alpha.1'
+    RELEASE_VERSION = '0.1.0-alpha.2'
     RELEASE_URL = "https://github.com/leolee9086/dsh-sketchup/releases/download/v#{RELEASE_VERSION}"
     MAX_DOWNLOAD = 1_048_576
 
