@@ -18,8 +18,29 @@ DSHSketchupBridge.boot_log("main loaded")
 module DSHSketchupBridge
   VERSION = "0.1.0"
   HOST = ENV.fetch("DSH_SKETCHUP_HOST", "127.0.0.1")
+  # The Host listens on the DSH web server port, which is not fixed. It writes
+  # that port to a discovery file; the environment variable stays as an override.
+  DISCOVERY_FILE = begin
+    local = ENV["LOCALAPPDATA"]
+    if local.nil? || local.empty?
+      File.join(Dir.home, ".dsh-sketchup", "bridge.json")
+    else
+      File.join(local, "dsh-sketchup", "bridge.json")
+    end
+  end
   PORT = begin
-    Integer(ENV.fetch("DSH_SKETCHUP_PORT", "3080"), 10)
+    configured = ENV["DSH_SKETCHUP_PORT"]
+    configured = nil if configured && configured.empty?
+    if configured
+      Integer(configured, 10)
+    else
+      discovered = begin
+        JSON.parse(File.read(DISCOVERY_FILE))["port"]
+      rescue Exception
+        nil
+      end
+      discovered.is_a?(Integer) && discovered.positive? ? discovered : 3080
+    end
   rescue ArgumentError
     3080
   end

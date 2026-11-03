@@ -9,6 +9,9 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import {
   DEFAULT_EVENT_PAYLOAD_BYTES,
@@ -84,6 +87,22 @@ export function resolveConfig(config: Config): ResolvedConfig {
 }
 
 /**
+ * Where the Ruby extension looks for the bridge port. The Host port is the DSH
+ * web server's, which is not fixed, so the extension cannot hard-code it.
+ */
+export function bridgeDiscoveryFile(): string {
+  const local = process.env['LOCALAPPDATA']
+  return local !== undefined && local !== ''
+    ? path.join(local, 'dsh-sketchup', 'bridge.json')
+    : path.join(homedir(), '.dsh-sketchup', 'bridge.json')
+}
+
+/** Drop the discovery file on dispose so a stale port cannot attract a client. */
+async function removeDiscoveryFile(): Promise<void> {
+  await rm(bridgeDiscoveryFile(), { force: true })
+}
+
+/**
  * Mount the route and tools. Nothing listens until this package appears in a
  * profile bundle, so installing the package alone is harmless.
  */
@@ -129,6 +148,24 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     },
   }
   ctx.effect(() => ctx.webServer.register(configRoute), 'bridge-sketchup: config route')
+  // The SketchUp process outlives DSH restarts, so it discovers the current port
+  // from a file instead of an environment variable the user would have to set.
+  ctx.effect(() => {
+    const file = bridgeDiscoveryFile()
+    const wsUrl = `ws://127.0.0.1:${ctx.webServer.port}${SKETCHUP_BRIDGE_PATH}`
+    void mkdir(path.dirname(file), { recursive: true })
+      .then(() => writeFile(file, JSON.stringify({
+        wsUrl,
+        port: ctx.webServer.port,
+        origin: SKETCHUP_BRIDGE_ORIGIN,
+        protocol: 1,
+        updatedAt: new Date().toISOString(),
+      }, null, 2), 'utf8'))
+      .catch((error: unknown) => {
+        ctx.logger.warn(`SketchUp bridge: discovery file not written: ${String(error)}`)
+      })
+    return () => { void removeDiscoveryFile() }
+  }, 'bridge-sketchup: discovery file')
   ctx.effect(() => registerSketchupSurface(ctx, server), 'bridge-sketchup: WebView surface')
 
   ctx.effect(() => {

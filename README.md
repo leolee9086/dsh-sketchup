@@ -56,7 +56,7 @@ SketchUp Ruby 扩展 ── 本地 WebSocket ── DSH Host 插件
   SketchUp API／界面定时器              工具、实例路由、内嵌网页
 ```
 
-默认本地地址为 `ws://127.0.0.1:3080/ext/sketchup`。几何坐标和工具长度统一使用 **SketchUp 内部单位：英寸**。事件历史来自观察器回调，不等于完整的内部撤销记录。
+桥接挂在 DSH 自己的 web 服务器端口上，不是固定端口：Host 启动时把 `wsUrl` 写进 `%LOCALAPPDATA%\dsh-sketchup\bridge.json`（非 Windows 为 `~/.dsh-sketchup/bridge.json`），Ruby 扩展启动时读它；`DSH_SKETCHUP_PORT` 仍可覆盖，两者都没有时才回退 3080。几何坐标和工具长度统一使用 **SketchUp 内部单位：英寸**。事件历史来自观察器回调，不等于完整的内部撤销记录。
 
 ## 权限与已知限制
 
