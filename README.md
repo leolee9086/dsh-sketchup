@@ -48,6 +48,7 @@ tgz 安装走 pnpm 的文件符号链接，Windows 需要开发者模式或管�
 
 - 读取模型信息、选择集、当前编辑路径、限量实体几何信息和审计事件。
 - 执行结构化操作：创建长方体或圆柱体、选择或删除实体、切换活动标签、保存模型。
+- 经 Host 显式启用后，通过 `sketchup_ruby` 在指定实例的 UI 线程执行 Ruby；返回有界结果、标准输出、错误输出与异常详情。Ruby 调用必须提供 `instanceId` 和 `confirm: true`，不会隐式选择窗口。
 - 按明确指定的 SketchUp 实例或当前会话绑定分发指令。绑定的实例断线时会报错，不会悄悄转发到另一个已打开的模型。
 - 在 SketchUp 内打开经过认证的 Harness 聊天界面。
 - 在内嵌窗口的应用模块加载**之前**执行 `core-js/stable` 垫片，补充 Iterator、Set 运算、分组、数组复制方法等标准 API；普通浏览器标签页和 Node Host 不受影响。详见 [CEF 兼容说明](docs/cef-compatibility.md)。
@@ -60,9 +61,17 @@ SketchUp Ruby 扩展 ── 本地 WebSocket ── DSH Host 插件
 
 桥接挂在 DSH 自己的 web 服务器端口上，不是固定端口：Host 启动时把 `wsUrl` 写进 `%LOCALAPPDATA%\dsh-sketchup\bridge.json`（非 Windows 为 `~/.dsh-sketchup/bridge.json`），Ruby 扩展启动时读它；`DSH_SKETCHUP_PORT` 仍可覆盖，两者都没有时才回退 3080。几何坐标和工具长度统一使用 **SketchUp 内部单位：英寸**。事件历史来自观察器回调，不等于完整的内部撤销记录。
 
+## 配置面板
+
+在 Harness 左侧打开 **插件 → SketchUp 桥接**，在 `bridge-sketchup` 组件行点击 **配置**。页面提供“允许写入插件文件”“允许加载插件”“允许执行 Ruby 脚本”三个开关，点击 **保存** 后才写入 Host 设置；离开页面或“放弃修改”会丢弃尚未保存的选择。
+
+保存使用 Harness 的配置表单接口，带修订号检查，不会覆盖其它页面的并发修改。权限在现有连接上热更新；下一次工具调用前同步到 SketchUp，空闲连接在下一次心跳时同步。配置页面需要提供 `plugins.row.config` 插槽的 Harness 版本。源码目录安装后，构建 Host 并通过插件管理器重新组合加载；页面刷新只负责重新载入浏览器资源。
+
 ## 权限与已知限制
 
-随包提供的 Host 配置将 `allowPluginWrite` 和 `allowPluginLoad` 默认设为 **false**。启用后，Ruby 代码可以使用 SketchUp 的进程权限；每次写入或重新加载还需传入 `confirm: true`。虽然没有通用 eval 命令，加载 Ruby 文件仍属于代码执行，启用前应检查源码。
+Host 的 `allowPluginWrite`、`allowPluginLoad` 和 `allowRubyExecute` 默认均为 **false**。Ruby 执行与插件文件写入/加载是分开的显式开关。`sketchup_ruby` 每次都要求明确 `instanceId` 和 `confirm: true`，并由目标实例再次核对身份。Ruby 具有 SketchUp 进程权限，不是沙箱；请只执行已审阅且获授权的代码。
+
+Ruby 代码限制为 1,000,000 UTF-8 字节。它在既有 UI 队列中执行，不自动开启模型事务（打开文件、保存及事务由脚本管理）。排队任务可取消；已经运行的 Ruby/native 调用不能安全中断，超时后必须先核实状态，不可盲目重试。返回对象中的 `success: false` 表示脚本失败，即便传输成功；请检查 `error`、`stdout`、`stderr` 和截断标记。捕获 Ruby `$stdout/$stderr`，不承诺捕获原生文件描述符或子进程输出。
 
 回环地址检查与固定的 `sketchup://dsh-bridge` Origin 用于限制浏览器来源，**不能验证恶意本地进程的身份**，因此应在可信本机环境使用。桥接将模型数据发送给本地 Harness；Harness 可能按照所选模型服务和自身设置将数据发送给模型提供方。本仓库和发布套装不包含个人工程、会话记录或凭证。
 

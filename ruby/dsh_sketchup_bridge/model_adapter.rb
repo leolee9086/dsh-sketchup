@@ -7,6 +7,7 @@ require "fileutils"
 require "json"
 require "tempfile"
 require "securerandom"
+require File.join(__dir__, "ruby_executor")
 
 module DSHSketchupBridge
   class ModelAdapter
@@ -36,6 +37,8 @@ module DSHSketchupBridge
         query(args)
       when "sketchup_execute"
         execute(args)
+      when "sketchup_ruby"
+        execute_ruby(args)
       when "sketchup_write_plugin"
         write_plugin(args)
       when "sketchup_reload_plugin"
@@ -141,6 +144,32 @@ module DSHSketchupBridge
     end
 
     private
+
+    # This method is reached only by Manager's existing UI-thread drain_queue.
+    # Gates are checked here again, immediately before evaluation (not just by Host).
+    def execute_ruby(args)
+      raise ArgumentError, "confirm=true is required for Ruby execution" unless args["confirm"] == true
+      unless @manager.ruby_execute_enabled == true
+        raise DSHSketchupBridge::PermissionError, "Ruby execution is disabled by the DSH Host configuration"
+      end
+      expected = args["expectedInstanceId"]
+      unless expected.is_a?(String) && !expected.empty? && expected == @manager.instance_id
+        raise DSHSketchupBridge::PermissionError, "expectedInstanceId does not match this SketchUp instance"
+      end
+      code = args["code"]
+      unless code.is_a?(String) && code.valid_encoding? && !code.strip.empty?
+        raise ArgumentError, "code must be a non-empty, valid encoded string"
+      end
+      raise ArgumentError, "Ruby code exceeds 1000000 bytes" if code.bytesize > MAX_CODE_BYTES
+      filename = args.fetch("filename", "(sketchup_ruby)")
+      unless filename.is_a?(String) && filename.valid_encoding? && !filename.strip.empty? &&
+             filename.bytesize <= 1024 && !filename.match?(/[\x00-\x1f]/)
+        raise ArgumentError, "filename must be a non-empty string without control characters, at most 1024 bytes"
+      end
+      # The filename labels eval diagnostics only; never read/write it. Do not
+      # wrap an operation: scripts can change the active model or save a document.
+      RubyExecution.execute(code, filename.encode(Encoding::UTF_8), @manager.instance_id)
+    end
 
     def active_model!
       model = Sketchup.active_model

@@ -47,6 +47,7 @@ export const SKETCHUP_TOOL_NAMES = [
   'sketchup_history',
   'sketchup_query',
   'sketchup_execute',
+  'sketchup_ruby',
   'sketchup_write_plugin',
   'sketchup_reload_plugin',
 ] as const
@@ -164,6 +165,19 @@ export function registerSketchupTools(
       timeoutMs: options.toolTimeoutMs,
       output: TEXT_OUTPUT,
       execute: (args, exec) => call(exec, 'sketchup_execute', args as Record<string, JsonValue>),
+    }),
+    defineTool({
+      name: 'sketchup_ruby',
+      description: 'Run explicitly authorized Ruby on the selected SketchUp UI thread. Requires an explicit instanceId, confirm=true and Host allowRubyExecute=true. Returns bounded result/stdout/stderr and errors. This is not a sandbox: scripts can change models or files. Scripts own their transactions; cancellation cannot interrupt code already running. Never retry a timeout blindly.',
+      parameters: {
+        instanceId: { ...INSTANCE_PARAMETER, required: true },
+        code: { type: 'string', required: true, description: 'Ruby source, at most 1,000,000 UTF-8 bytes. The last expression is returned; use puts for diagnostic output.' },
+        confirm: { type: 'boolean', required: true, const: true, description: 'Explicitly authorize execution with SketchUp process privileges.' },
+        filename: { type: 'string', description: 'Optional diagnostic source label for error backtraces; not a file to load.' },
+      },
+      timeoutMs: options.toolTimeoutMs,
+      output: TEXT_OUTPUT,
+      execute: (args, exec) => call(exec, 'sketchup_ruby', args as Record<string, JsonValue>),
     }),
     defineTool({
       name: 'sketchup_write_plugin',

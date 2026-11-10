@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SketchUp bridge",
+    "description": "Connect local SketchUp models and manage plugin writing, loading and Ruby execution permissions."
+  }
+}

@@ -25,6 +25,12 @@ const HOST_CAPS = {
 }
 
 describe('SketchUp bridge protocol', () => {
+  it('accepts old Hosts without Ruby capability, but rejects malformed opt-in values', () => {
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: HOST_CAPS }))).toBeDefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { ...HOST_CAPS, rubyExecuteEnabled: true } }))).toBeDefined()
+    expect(parseBridgeFrame(JSON.stringify({ t: 'hello.ok', caps: { ...HOST_CAPS, rubyExecuteEnabled: 'true' } }))).toBeUndefined()
+  })
+
   it('parses valid client and server frames', () => {
     const hello = parseBridgeFrame(JSON.stringify({ t: 'hello', caps: CLIENT_CAPS }))!
     const event = parseBridgeFrame(JSON.stringify({

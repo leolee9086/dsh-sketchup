@@ -1,0 +1,7 @@
+{
+  "name": "dsh-sketchup-local-events",
+  "apiVersion": 1,
+  "implementationVersion": "1.0.0",
+  "entry": "event_service.rb",
+  "files": ["event_service.rb", "main_thread_dispatcher.rb"]
+}

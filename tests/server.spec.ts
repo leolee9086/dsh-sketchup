@@ -37,14 +37,13 @@ afterEach(async () => {
 async function startBridge(
   overrides: Partial<ConstructorParameters<typeof SketchupBridgeServer>[0]> = {},
 ): Promise<Harness> {
-  const bridge = new SketchupBridgeServer({
+  const bridge = new SketchupBridgeServer(Object.defineProperties({
     toolTimeoutMs: 1_000,
     maxHistoryEvents: 20,
     maxEventPayloadBytes: 256,
     pluginWriteEnabled: false,
     pluginLoadEnabled: false,
-    ...overrides,
-  })
+  }, Object.getOwnPropertyDescriptors(overrides)))
   const http = createServer()
   http.on('upgrade', (request, socket, head) => bridge.handleUpgrade(request, socket, head))
   await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
@@ -90,6 +89,81 @@ async function handshake(
 }
 
 describe('SketchupBridgeServer', () => {
+  it('updates live permissions before dispatch without reconnecting', async () => {
+    const policy = { write: false, load: false, ruby: false }
+    // 使用真正的 WebSocket；getter 模拟 Loader 引用的当前值，不伪造服务。
+    const harness = await startBridge({
+      get pluginWriteEnabled() { return policy.write },
+      get pluginLoadEnabled() { return policy.load },
+      get rubyExecuteEnabled() { return policy.ruby },
+    })
+    const bridge = harness.bridge
+    const client = await handshake(harness, { ...CLIENT_CAPS, features: ['ruby_execute'] })
+    const signal = new AbortController().signal
+    const request = (name: string, args: { confirm: boolean; load?: boolean } = { confirm: true }) => bridge.requestTool(name, args, signal, 1000, undefined, CLIENT_CAPS.instanceId)
+    expect(() => request('sketchup_write_plugin')).toThrow(/disabled/)
+    expect(() => request('sketchup_reload_plugin')).toThrow(/disabled/)
+    policy.write = true
+    expect(() => request('sketchup_write_plugin', { confirm: true, load: true })).toThrow(/loading is disabled/)
+    policy.load = true
+    policy.ruby = true
+    const connectedAt = bridge.instances()[0]!.connectedAt
+    const pending = request('sketchup_write_plugin')
+    await waitFor(() => client.frames.some(frame => frame.t === 'tool.call'))
+    const callIndex = client.frames.findIndex(frame => frame.t === 'tool.call')
+    expect(client.frames[callIndex - 1]).toMatchObject({
+      t: 'hello.ok', caps: { pluginWriteEnabled: true, pluginLoadEnabled: true, rubyExecuteEnabled: true },
+    })
+    const call = client.frames[callIndex] as Extract<BridgeFrame, { t: 'tool.call' }>
+    send(client.ws, { t: 'tool.result', id: call.id, ok: true, result: { written: true } })
+    await expect(pending).resolves.toEqual({ written: true })
+    policy.write = false
+    policy.load = false
+    policy.ruby = false
+    expect(bridge.status()).toMatchObject({ pluginWriteEnabled: false, pluginLoadEnabled: false, rubyExecuteEnabled: false })
+    expect(() => request('sketchup_write_plugin')).toThrow(/disabled/)
+    expect(() => request('sketchup_reload_plugin')).toThrow(/disabled/)
+    expect(() => bridge.requestTool('sketchup_ruby', { code: '1', confirm: true }, signal, 1000, undefined, CLIENT_CAPS.instanceId)).toThrow(/disabled/)
+    expect(bridge.instances()[0]!.connectedAt).toBe(connectedAt)
+  })
+
+  it('rejects Ruby when disabled, unconfirmed, oversized, ambiguous or unsupported', async () => {
+    const disabled = await startBridge()
+    await handshake(disabled)
+    const signal = new AbortController().signal
+    const args = { code: '1 + 1', confirm: true }
+    expect(() => disabled.bridge.requestTool('sketchup_ruby', args, signal, 1000, undefined, CLIENT_CAPS.instanceId))
+      .toThrowError(expect.objectContaining({ code: 'not-enabled' }))
+    const enabled = await startBridge({ rubyExecuteEnabled: true })
+    const client = await handshake(enabled)
+    enabled.bridge.bindSession('bound-session', CLIENT_CAPS.instanceId)
+    expect(() => enabled.bridge.requestTool('sketchup_ruby', args, signal, 1000, 'bound-session'))
+      .toThrowError(expect.objectContaining({ code: 'bad-args' }))
+    for (const invalid of [{ code: '1' }, { code: '', confirm: true }, { code: '汉'.repeat(400000), confirm: true }]) {
+      expect(() => enabled.bridge.requestTool('sketchup_ruby', invalid, signal, 1000, undefined, CLIENT_CAPS.instanceId))
+        .toThrowError(expect.objectContaining({ code: 'bad-args' }))
+    }
+    expect(() => enabled.bridge.requestTool('sketchup_ruby', args, signal, 1000, undefined, CLIENT_CAPS.instanceId))
+      .toThrowError(expect.objectContaining({ code: 'not-enabled' }))
+    expect(client.frames.some(frame => frame.t === 'tool.call')).toBe(false)
+  })
+
+  it('routes Ruby only to its explicit capable instance and stamps the expected identity', async () => {
+    const harness = await startBridge({ rubyExecuteEnabled: true })
+    const source = await handshake(harness)
+    const target = await handshake(harness, { ...CLIENT_CAPS, instanceId: 'sketchup-target', features: ['ruby_execute'] })
+    const pending = harness.bridge.requestTool('sketchup_ruby', {
+      code: 'Process.pid', confirm: true, expectedInstanceId: 'spoofed',
+    }, new AbortController().signal, 1000, undefined, 'sketchup-target')
+    await waitFor(() => target.frames.some(frame => frame.t === 'tool.call'))
+    const call = target.frames.find((frame): frame is Extract<BridgeFrame, { t: 'tool.call' }> => frame.t === 'tool.call')!
+    expect(call.args.expectedInstanceId).toBe('sketchup-target')
+    expect(source.frames.some(frame => frame.t === 'tool.call')).toBe(false)
+    send(target.ws, { t: 'tool.result', id: call.id, ok: true, result: { success: true, result: 18840 } })
+    await expect(pending).resolves.toEqual({ success: true, result: 18840 })
+    expect(harness.bridge.status().rubyExecuteEnabled).toBe(true)
+  })
+
   it('recognizes only loopback addresses', () => {
     expect(isLoopbackAddress('127.0.0.1')).toBe(true)
     expect(isLoopbackAddress('::1')).toBe(true)
@@ -109,6 +183,7 @@ describe('SketchupBridgeServer', () => {
         eventPayloadBytes: 256,
         pluginWriteEnabled: false,
         pluginLoadEnabled: false,
+        rubyExecuteEnabled: false,
       },
     })
     client.ws.close()

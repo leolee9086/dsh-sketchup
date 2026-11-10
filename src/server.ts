@@ -79,6 +79,7 @@ export interface SketchupBridgeServerDeps {
   maxEventPayloadBytes?: number
   pluginWriteEnabled: boolean
   pluginLoadEnabled: boolean
+  rubyExecuteEnabled?: boolean
   remoteAddressOverride?: string
   helloTimeoutMs?: number
   pingIntervalMs?: number
@@ -98,6 +99,8 @@ interface ReadyConnection {
   ping: NodeJS.Timeout
   caps: SketchupCaps & { instanceId: string }
   connectedAt: number
+  /** 上次发给该实例的权限快照；变化时复用 hello.ok 更新 Ruby 侧。 */
+  hostCapsJson: string
 }
 
 /** Loopback literals accepted by the Host safety fence. */
@@ -187,6 +190,7 @@ export class SketchupBridgeServer {
     lastEventAt?: number
     pluginWriteEnabled: boolean
     pluginLoadEnabled: boolean
+    rubyExecuteEnabled: boolean
   } {
     const all = this.instances()
     const lastEventAt = all.reduce<number | undefined>((latest, item) =>
@@ -199,6 +203,7 @@ export class SketchupBridgeServer {
       ...(lastEventAt === undefined ? {} : { lastEventAt }),
       pluginWriteEnabled: this.deps.pluginWriteEnabled,
       pluginLoadEnabled: this.deps.pluginLoadEnabled,
+      rubyExecuteEnabled: this.deps.rubyExecuteEnabled === true,
     }
   }
 
@@ -263,6 +268,35 @@ export class SketchupBridgeServer {
     sessionId?: string,
     instanceId?: string,
   ): Promise<unknown> {
+    // Host 先检查当前设置，不能依赖 Ruby 尚未收到的旧权限快照。
+    if (name === 'sketchup_write_plugin' && !this.deps.pluginWriteEnabled) {
+      throw new SketchupBridgeError('not-enabled', 'Plugin writing is disabled by Host configuration')
+    }
+    if ((name === 'sketchup_reload_plugin' || (name === 'sketchup_write_plugin' && args.load === true))
+      && !this.deps.pluginLoadEnabled) {
+      throw new SketchupBridgeError('not-enabled', 'Plugin loading is disabled by Host configuration')
+    }
+    // Ruby is intentionally stricter than read-only tools: a binding or the only
+    // connected window must never silently select a code-execution target.
+    if (name === 'sketchup_ruby') {
+      if (this.deps.rubyExecuteEnabled !== true) {
+        throw new SketchupBridgeError('not-enabled', 'Ruby execution is disabled by Host configuration')
+      }
+      if (instanceId === undefined || !isInstanceId(instanceId)) {
+        throw new SketchupBridgeError('bad-args', 'sketchup_ruby requires an explicit valid instanceId')
+      }
+      if (args.confirm !== true || typeof args.code !== 'string' || args.code.trim() === '') {
+        throw new SketchupBridgeError('bad-args', 'sketchup_ruby requires confirm=true and non-empty code')
+      }
+      if (Buffer.byteLength(args.code, 'utf8') > 1_000_000) {
+        throw new SketchupBridgeError('bad-args', 'Ruby code exceeds 1,000,000 UTF-8 bytes')
+      }
+      if (args.filename !== undefined && (typeof args.filename !== 'string' || args.filename.length > 1024 || args.filename.includes('\0'))) {
+        throw new SketchupBridgeError('bad-args', 'filename must be a diagnostic label of at most 1024 characters without NUL')
+      }
+      // Do not trust an expected id supplied inside arbitrary request args.
+      args = { ...args, expectedInstanceId: instanceId }
+    }
     const targetId = this.resolveTarget(instanceId, sessionId, `tool "${name}"`)
     if (targetId === undefined) {
       throw new SketchupBridgeError('bridge-closed', 'no SketchUp client is connected')
@@ -270,6 +304,9 @@ export class SketchupBridgeServer {
     const connection = this.connections.get(targetId)
     if (connection === undefined) {
       throw new SketchupBridgeError('unknown-instance', `SketchUp instance "${targetId}" is not connected`)
+    }
+    if (name === 'sketchup_ruby' && !connection.caps.features.includes('ruby_execute')) {
+      throw new SketchupBridgeError('not-enabled', 'This SketchUp instance has not loaded the Ruby execution extension')
     }
     if (signal.aborted) {
       throw new SketchupBridgeError('bridge-closed', 'SketchUp tool call was cancelled before dispatch')
@@ -307,6 +344,8 @@ export class SketchupBridgeServer {
       if (!this.pendingTools.has(id)) return
 
       try {
+        // WebSocket 保序：新权限先到 Ruby，随后才允许它处理本次调用。
+        this.syncHostCaps(connection)
         connection.ws.send(JSON.stringify({ t: 'tool.call', id, name, args, expiresAt } satisfies ServerFrame), (error) => {
           if (error != null) {
             settle(new SketchupBridgeError('bridge-closed', `bridge socket failed before delivery: ${error.message}`))
@@ -377,17 +416,27 @@ export class SketchupBridgeServer {
     }
     const existing = this.connections.get(instanceId)
     if (existing !== undefined) this.dropConnection(existing, 'replaced')
-    const ping = setInterval(() => sendFrame(ws, { t: 'ping' }), this.deps.pingIntervalMs ?? PING_INTERVAL_MS)
+    const ping = setInterval(() => {
+      this.syncHostCaps(connection)
+      sendFrame(ws, { t: 'ping' })
+    }, this.deps.pingIntervalMs ?? PING_INTERVAL_MS)
     const connection: ReadyConnection = {
       ws,
       remoteAddress,
       ping,
       caps: normalizedCaps,
       connectedAt: Date.now(),
+      hostCapsJson: '',
     }
     this.connections.set(instanceId, connection)
     if (!this.histories.has(instanceId)) this.histories.set(instanceId, [])
-    sendFrame(ws, {
+    this.syncHostCaps(connection)
+    return connection
+  }
+
+  /** 设置原地更新，保留连接、实例身份和正在运行的模型任务。 */
+  private syncHostCaps(connection: ReadyConnection): void {
+    const frame: ServerFrame = {
       t: 'hello.ok',
       caps: {
         protocol: 1,
@@ -395,9 +444,13 @@ export class SketchupBridgeServer {
         eventPayloadBytes: this.deps.maxEventPayloadBytes ?? DEFAULT_EVENT_PAYLOAD_BYTES,
         pluginWriteEnabled: this.deps.pluginWriteEnabled,
         pluginLoadEnabled: this.deps.pluginLoadEnabled,
+        rubyExecuteEnabled: this.deps.rubyExecuteEnabled === true,
       },
-    })
-    return connection
+    }
+    const json = JSON.stringify(frame)
+    if (json === connection.hostCapsJson) return
+    sendFrame(connection.ws, frame)
+    connection.hostCapsJson = json
   }
 
   private handleReadyFrame(connection: ReadyConnection, frame: BridgeFrame): void {

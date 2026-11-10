@@ -34,9 +34,12 @@ module DSHSketchupBridge
 
     # A client object represents exactly one connection; the manager creates a
     # new object on reconnect. The RFC challenge verifies framing, not identity.
-    def connect
+    # 仅由连接工作线程调用。初始 hello 在当前线程直接写入，避免
+    # SketchUp 忙于原生操作时，等待另一个 Ruby 线程使宿主握手超时。
+    def connect(initial_frame: nil)
       raise "WebSocket client cannot be reused" unless @writer.nil? && @socket.nil?
-      @socket = Timeout.timeout(@timeout) { TCPSocket.new(@host, @port) }
+      # 连接超时由套接字实现处理，避免 Timeout 在线程恢复时异步抛错。
+      @socket = Socket.tcp(@host, @port, connect_timeout: @timeout)
       @socket.sync = true
       key = Base64.strict_encode64(SecureRandom.random_bytes(16))
       request = [
@@ -46,11 +49,16 @@ module DSHSketchupBridge
         "Origin: #{BRIDGE_ORIGIN}", "", ""
       ].join("\r\n")
       write_all(@socket, request)
-      headers = Timeout.timeout(@timeout) { read_http_headers }
+      headers = read_http_headers
       status = headers["__status__"].to_s
       raise "WebSocket upgrade rejected: #{status}" unless status.match?(/\AHTTP\/\d(?:\.\d)?\s+101(?:\s|\z)/)
       expected = Base64.strict_encode64(Digest::SHA1.digest(key + WEBSOCKET_GUID))
       raise "WebSocket accept key mismatch" unless headers["sec-websocket-accept"] == expected
+      unless initial_frame.nil?
+        data = JSON.generate(initial_frame).b
+        raise "WebSocket payload exceeds #{MAX_FRAME_BYTES} bytes" if data.bytesize > MAX_FRAME_BYTES
+        write_all(@socket, encode_frame(0x1, data))
+      end
       start_writer
       self
     rescue Exception
@@ -138,10 +146,16 @@ module DSHSketchupBridge
 
     def read_http_headers
       separator = nil
+      deadline = monotonic_time + @timeout
       until separator
         separator = @read_buffer.index("\r\n\r\n")
         break if separator
-        @read_buffer << @socket.readpartial(1024).b
+        socket = @socket
+        wait_io(socket, false, deadline)
+        chunk = socket.read_nonblock(1024, exception: false)
+        next if chunk == :wait_readable
+        raise "unexpected end of HTTP upgrade headers" if chunk.nil? || chunk.empty?
+        @read_buffer << chunk.b
         raise "HTTP upgrade headers are too large" if @read_buffer.bytesize > 64 * 1024
       end
       raw = @read_buffer.byteslice(0, separator)
@@ -288,13 +302,12 @@ module DSHSketchupBridge
     end
 
     def wait_io(socket, writing, deadline)
-      loop do
-        raise "WebSocket is closed" unless @socket.equal?(socket) && !socket.closed?
-        remaining = deadline - monotonic_time
-        raise Timeout::Error, "WebSocket #{writing ? 'write' : 'read'} timed out" if remaining <= 0
-        ready = IO.select(writing ? nil : [socket], writing ? [socket] : nil, nil, [remaining, 0.1].min)
-        return unless ready.nil?
-      end
+      raise "WebSocket is closed" unless @socket.equal?(socket) && !socket.closed?
+      # 一次内核等待，直到就绪、关闭或deadline。过期时仍允许已经到达的数据，
+      # 因为 SU 原生操作可能暂时占用解释器；不再分成100毫秒的重复检查。
+      remaining = [deadline - monotonic_time, 0.0].max
+      ready = IO.select(writing ? nil : [socket], writing ? [socket] : nil, nil, remaining)
+      raise Timeout::Error, "WebSocket #{writing ? 'write' : 'read'} timed out" if ready.nil?
     end
   end
 end

@@ -27,10 +27,14 @@ describe('SketchUp bridge config', () => {
       maxResultChars: 120_000,
       allowPluginWrite: false,
       allowPluginLoad: false,
+      allowRubyExecute: false,
     })
-    expect(resolveConfig({ toolTimeoutMs: 1, maxHistoryEvents: 2, maxEventPayloadBytes: 3, maxResultChars: 4, allowPluginWrite: true, allowPluginLoad: true }))
-      .toEqual({ toolTimeoutMs: 1, maxHistoryEvents: 2, maxEventPayloadBytes: 3, maxResultChars: 4, allowPluginWrite: true, allowPluginLoad: true })
+    expect(resolveConfig({ toolTimeoutMs: 1, maxHistoryEvents: 2, maxEventPayloadBytes: 3, maxResultChars: 4, allowPluginWrite: true, allowPluginLoad: true, allowRubyExecute: true }))
+      .toEqual({ toolTimeoutMs: 1, maxHistoryEvents: 2, maxEventPayloadBytes: 3, maxResultChars: 4, allowPluginWrite: true, allowPluginLoad: true, allowRubyExecute: true })
     expect(new Config().maxHistoryEvents).toBe(200)
+    // Loader 输出的权限是引用，不能把引用对象本身当作 true。
+    expect(resolveConfig(new Config())).toEqual(resolveConfig({}))
+    expect(resolveConfig(new Config({ allowPluginWrite: true })).allowPluginWrite).toBe(true)
   })
 
   it('rejects invalid budgets at the plugin boundary', async () => {

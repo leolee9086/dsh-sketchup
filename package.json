@@ -33,6 +33,9 @@
       "types": "./lib/types/invariant.d.ts",
       "default": "./lib/invariant.js"
     },
+    "./client": "./src/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./assets/icon.svg",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
@@ -49,11 +52,20 @@
     "install.ps1",
     "install.sh",
     "THIRD-PARTY",
-    "docs"
+    "docs",
+    "locale/*.json",
+    "assets/icon.svg"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   },
   "peerDependencies": {

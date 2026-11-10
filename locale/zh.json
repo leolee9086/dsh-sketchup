@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SketchUp 桥接",
+    "description": "连接本地 SketchUp，读取和编辑模型，并管理插件写入、加载与 Ruby 执行权限。"
+  }
+}

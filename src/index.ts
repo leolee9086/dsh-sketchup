@@ -49,18 +49,37 @@ export interface Config {
   maxResultChars?: number
   allowPluginWrite?: boolean
   allowPluginLoad?: boolean
+  /** Explicit deployment opt-in for arbitrary Ruby execution. */
+  allowRubyExecute?: boolean
 }
 
-export const Config: z<Config> = z.object({
+/** Loader 持有稳定引用；每次调用读取当前值，设置保存后无需断开桥接。 */
+interface PermissionRef {
+  get(): boolean
+}
+
+export interface LiveConfig extends Omit<Required<Config>, 'allowPluginWrite' | 'allowPluginLoad' | 'allowRubyExecute'> {
+  allowPluginWrite: PermissionRef
+  allowPluginLoad: PermissionRef
+  allowRubyExecute: PermissionRef
+}
+
+export const Config: z<Config, LiveConfig> = z.object({
   toolTimeoutMs: z.number().step(1).min(1).default(DEFAULT_TOOL_TIMEOUT_MS),
   maxHistoryEvents: z.number().step(1).min(1).default(DEFAULT_HISTORY_EVENTS),
   maxEventPayloadBytes: z.number().step(1).min(1).default(DEFAULT_EVENT_PAYLOAD_BYTES),
   maxResultChars: z.number().step(1).min(1).default(120_000),
-  allowPluginWrite: z.boolean().default(false),
-  allowPluginLoad: z.boolean().default(false),
+  allowPluginWrite: z.boolean().default(false).description('允许写入 SketchUp 插件文件').volatile(),
+  allowPluginLoad: z.boolean().default(false).description('允许加载 SketchUp 插件').volatile(),
+  allowRubyExecute: z.boolean().default(false).description('允许执行 Ruby 脚本').volatile(),
 })
 
 type ResolvedConfig = Required<Config>
+
+/** 同时接受直接调用的布尔值与 Loader 解析后的配置引用。 */
+function permissionValue(value: boolean | PermissionRef | undefined): boolean {
+  return typeof value === 'boolean' ? value : value?.get() ?? false
+}
 
 /** Validate positive integer budgets at direct-call and Loader boundaries. */
 export function assertPositiveInteger(name: string, value: number): void {
@@ -70,14 +89,15 @@ export function assertPositiveInteger(name: string, value: number): void {
 }
 
 /** Apply defaults and reject unsafe/non-integral bounds. */
-export function resolveConfig(config: Config): ResolvedConfig {
+export function resolveConfig(config: Config | LiveConfig): ResolvedConfig {
   const resolved: ResolvedConfig = {
     toolTimeoutMs: config.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
     maxHistoryEvents: config.maxHistoryEvents ?? DEFAULT_HISTORY_EVENTS,
     maxEventPayloadBytes: config.maxEventPayloadBytes ?? DEFAULT_EVENT_PAYLOAD_BYTES,
     maxResultChars: config.maxResultChars ?? 120_000,
-    allowPluginWrite: config.allowPluginWrite ?? false,
-    allowPluginLoad: config.allowPluginLoad ?? false,
+    allowPluginWrite: permissionValue(config.allowPluginWrite),
+    allowPluginLoad: permissionValue(config.allowPluginLoad),
+    allowRubyExecute: permissionValue(config.allowRubyExecute),
   }
   assertPositiveInteger('toolTimeoutMs', resolved.toolTimeoutMs)
   assertPositiveInteger('maxHistoryEvents', resolved.maxHistoryEvents)
@@ -106,14 +126,15 @@ async function removeDiscoveryFile(): Promise<void> {
  * Mount the route and tools. Nothing listens until this package appears in a
  * profile bundle, so installing the package alone is harmless.
  */
-export async function apply(ctx: Context, config: Config): Promise<void> {
+export async function apply(ctx: Context, config: Config | LiveConfig): Promise<void> {
   const resolved = resolveConfig(config)
   const server = new SketchupBridgeServer({
     toolTimeoutMs: resolved.toolTimeoutMs,
     maxHistoryEvents: resolved.maxHistoryEvents,
     maxEventPayloadBytes: resolved.maxEventPayloadBytes,
-    pluginWriteEnabled: resolved.allowPluginWrite,
-    pluginLoadEnabled: resolved.allowPluginLoad,
+    get pluginWriteEnabled() { return permissionValue(config.allowPluginWrite) },
+    get pluginLoadEnabled() { return permissionValue(config.allowPluginLoad) },
+    get rubyExecuteEnabled() { return permissionValue(config.allowRubyExecute) },
   })
 
   const upgrade: WebUpgradeRoute = {
@@ -183,7 +204,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       order: 108,
       text: 'A local SketchUp bridge may be connected. Use sketchup_status first when the target is unclear; it lists connected instanceId values. Use the instanceId argument when multiple instances are connected. Then use sketchup_snapshot, sketchup_selection, '
         + 'sketchup_history, and sketchup_query to inspect the model; use sketchup_execute only with explicit '
-        + 'structured operations. Native UI history names are not always exposed by SketchUp observers. Plugin writing '
+        + 'structured operations. For Ruby scripts, use sketchup_ruby with an explicit instanceId and confirm=true only when Host allowRubyExecute is enabled. Ruby has full SketchUp privileges, owns its transactions and cannot be safely interrupted after starting; inspect state rather than blindly retry a timeout. Native UI history names are not always exposed by SketchUp observers. Plugin writing '
         + 'and loading require confirm=true and an enabled Host configuration.',
     }), 'bridge-sketchup: system prompt')
   }

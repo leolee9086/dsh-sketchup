@@ -73,6 +73,8 @@ export interface HostCaps {
   eventPayloadBytes: number
   pluginWriteEnabled: boolean
   pluginLoadEnabled: boolean
+  /** Missing on older Hosts; clients must treat absence as disabled. */
+  rubyExecuteEnabled?: boolean
 }
 
 /** Structured error returned for a tool call. */
@@ -159,6 +161,7 @@ function isHostCaps(value: unknown): value is HostCaps {
     && value.eventPayloadBytes > 0
     && typeof value.pluginWriteEnabled === 'boolean'
     && typeof value.pluginLoadEnabled === 'boolean'
+    && (value.rubyExecuteEnabled === undefined || typeof value.rubyExecuteEnabled === 'boolean')
 }
 
 /** Check a JSON-compatible error object. */

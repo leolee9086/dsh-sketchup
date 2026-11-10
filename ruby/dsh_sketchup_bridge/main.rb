@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-# Manager and SketchUp observers for the local DSH bridge. The important
-# threading rule is simple: socket I/O happens on a worker thread, while every
-# SketchUp API call is queued and drained by a repeating UI timer.
+# Socket I/O stays on worker threads. Windows messages wake the owning SketchUp
+# thread only when work arrives; no timer inspects an idle command queue.
 require "json"
 require "securerandom"
 require "time"
 require File.join(__dir__, "websocket_client")
+require File.join(__dir__, "event_service")
 begin
   require File.join(__dir__, "model_adapter")
 rescue Exception => error
@@ -28,20 +28,19 @@ module DSHSketchupBridge
       File.join(local, "dsh-sketchup", "bridge.json")
     end
   end
-  PORT = begin
+  # Harness may choose a new port after restart. Resolve it for each attempt,
+  # not once when this Ruby file is loaded. An explicit environment override
+  # still takes precedence. The optional path allows tests to use a real file.
+  def self.connection_port(discovery_file = DISCOVERY_FILE)
     configured = ENV["DSH_SKETCHUP_PORT"]
-    configured = nil if configured && configured.empty?
-    if configured
-      Integer(configured, 10)
-    else
-      discovered = begin
-        JSON.parse(File.read(DISCOVERY_FILE))["port"]
-      rescue Exception
-        nil
-      end
-      discovered.is_a?(Integer) && discovered.positive? ? discovered : 3080
-    end
-  rescue ArgumentError
+    port = if configured && !configured.empty?
+             Integer(configured, 10)
+           else
+             discovery = JSON.parse(File.read(discovery_file))
+             discovery.is_a?(Hash) ? discovery["port"] : nil
+           end
+    port.is_a?(Integer) && port.between?(1, 65_535) ? port : 3080
+  rescue SystemCallError, IOError, JSON::ParserError, ArgumentError, TypeError
     3080
   end
   PATH = "/ext/sketchup"
@@ -94,6 +93,27 @@ module DSHSketchupBridge
       @running
     end
 
+    # 其它本地扩展复用同一主线程投递器；网络线程不得直接触碰 SketchUp API。
+    def post_to_main(&work)
+      EventService.post(&work)
+    end
+
+    def dispatcher_stats
+      EventService.stats
+    end
+
+    # 热更新保留当前连接与 instanceId，并取消旧版本已创建的周期定时器。
+    def upgrade_dispatcher
+      raise 'Upgrade on the SketchUp main thread' unless Thread.current == Thread.main
+      UI.stop_timer(@timer_id) if @timer_id
+      @timer_id = nil
+      EventService.attach('dsh-bridge')
+      @dispatcher = EventService
+      @queue_wake_pending = false
+      schedule_queue
+      dispatcher_stats
+    end
+
     # The Host advertises these deployment policy switches in hello.ok. The
     # Ruby side deliberately does not duplicate them in environment variables;
     # the two processes already share the accepted local handshake.
@@ -105,6 +125,11 @@ module DSHSketchupBridge
       @host_caps.is_a?(Hash) && @host_caps["pluginLoadEnabled"] == true
     end
 
+    # Missing capability on older Hosts is deliberately disabled.
+    def ruby_execute_enabled
+      @host_caps.is_a?(Hash) && @host_caps["rubyExecuteEnabled"] == true
+    end
+
     # Start is called on SketchUp's UI thread by the loader timer or menu.
     def start
       return if @running
@@ -114,10 +139,12 @@ module DSHSketchupBridge
       @sketchup_version = safe_string(Sketchup, :version)
       @app_observer = AppObserver.new(self)
       Sketchup.add_observer(@app_observer)
-      @timer_id = UI.start_timer(0.05, true) { drain_queue }
-      UI.start_timer(0.1, false) { attach_model(Sketchup.active_model) }
+      EventService.attach('dsh-bridge')
+      @dispatcher = EventService
+      @queue_wake_pending = false
+      @dispatcher.post { attach_model(Sketchup.active_model) }
       @worker = Thread.new { connection_loop(run_generation) }
-      log("started; target ws://#{HOST}:#{PORT}#{PATH}")
+      log("started; target ws://#{HOST}:#{@connection_port || DSHSketchupBridge.connection_port}#{PATH}")
     rescue Exception => error
       @running = false
       @run_generation = nil
@@ -149,7 +176,11 @@ module DSHSketchupBridge
       @queue_mutex.synchronize do
         @queue.clear
         @cancelled.clear
+        @queue_wake_pending = false
       end
+      # 停止 Harness 网络连接不能销毁其它扩展仍在使用的事件服务。
+      EventService.detach('dsh-bridge')
+      @dispatcher = nil
       log("stopped")
     rescue Exception => error
       log("stop failed: #{error.class}: #{error.message}")
@@ -161,20 +192,17 @@ module DSHSketchupBridge
 
     # Open the reusable DSH WebView surface. The Host route performs the normal
     # process-token exchange; this native side supplies only its instance id.
-    def open_chat(attempt = 0)
+    def open_chat
       start unless running?
       if @chat_dialog
         @chat_dialog.show
         return
       end
       unless connected?
-        if attempt < 50
-          UI.start_timer(0.1, false) { open_chat(attempt + 1) }
-          return
-        end
-        UI.messagebox("DSH SketchUp bridge is not connected to the Web app.")
-        return
+        @open_chat_when_connected = true
+        return # hello.ok 到达时投递主线程回调；不定时查询连接状态。
       end
+      @open_chat_when_connected = false
       properties = {
         :dialog_title => "DSH SketchUp - #{short_instance_id}",
         :scrollable => true,
@@ -187,7 +215,7 @@ module DSHSketchupBridge
       dialog.set_on_closed do
         @chat_dialog = nil if @chat_dialog.equal?(dialog)
       end
-      url = "http://#{HOST}:#{PORT}/ext/sketchup-chat?instanceId=#{instance_id}"
+      url = "http://#{HOST}:#{@connection_port || DSHSketchupBridge.connection_port}/ext/sketchup-chat?instanceId=#{instance_id}"
       dialog.set_url(url)
       dialog.center
       dialog.show
@@ -207,8 +235,8 @@ module DSHSketchupBridge
               else
                 "connecting"
               end
-      "DSH SketchUp bridge #{state}; instance=#{short_instance_id}; #{HOST}:#{PORT}; queued=#{queue_size}; history=#{history_size}; " \
-        + "plugin_write=#{plugin_write_enabled}; plugin_load=#{plugin_load_enabled}"
+      "DSH SketchUp bridge #{state}; instance=#{short_instance_id}; #{HOST}:#{@connection_port || DSHSketchupBridge.connection_port}; queued=#{queue_size}; history=#{history_size}; " \
+        + "plugin_write=#{plugin_write_enabled}; plugin_load=#{plugin_load_enabled}; ruby_execute=#{ruby_execute_enabled}"
     end
 
     def short_instance_id
@@ -342,10 +370,14 @@ module DSHSketchupBridge
       while active_run?(run_generation)
         client = nil
         begin
-          client = WebSocketClient.new(host: HOST, port: PORT, path: PATH)
-          log("connecting")
-          client.connect
-          log("WebSocket upgrade complete")
+          # Re-read discovery after a disconnect: Harness can move to another
+          # port while SketchUp stays open. Keep this attempt's port for status
+          # and chat URLs so they describe the actual socket, not a later file.
+          @connection_port = DSHSketchupBridge.connection_port
+          client = WebSocketClient.new(host: HOST, port: @connection_port, path: PATH)
+          log("connecting to ws://#{HOST}:#{@connection_port}#{PATH}")
+          client.connect(initial_frame: hello_frame)
+          log("WebSocket upgrade complete; hello sent")
           accepted = @client_mutex.synchronize do
             if active_run?(run_generation)
               @client = client
@@ -357,8 +389,6 @@ module DSHSketchupBridge
             end
           end
           break unless accepted
-          client.send_json(hello_frame)
-          log("hello sent")
           delay = 1
           while active_run?(run_generation) && current_client?(client)
             frame = client.read_json
@@ -392,7 +422,8 @@ module DSHSketchupBridge
             "query",
             "structured-operations",
             "plugin-write",
-            "plugin-reload"
+            "plugin-reload",
+            "ruby_execute"
           ]
         }
       }
@@ -425,6 +456,7 @@ module DSHSketchupBridge
           @host_caps = frame["caps"]
         end
         record_event("bridge.connected", { "hostCaps" => @host_caps || {} })
+        @dispatcher.post { open_chat if @open_chat_when_connected }
         log("connected")
       when "ping"
         client.send_json({ "t" => "pong" })
@@ -455,18 +487,35 @@ module DSHSketchupBridge
           false
         end
       end
-      disconnect_client(client) if overflow
+      if overflow
+        disconnect_client(client)
+      else
+        schedule_queue
+      end
+    end
+
+    def schedule_queue
+      wake = @queue_mutex.synchronize do
+        next false if @queue.empty? || @queue_wake_pending
+        @queue_wake_pending = true
+      end
+      @dispatcher.post { drain_queue } if wake
+    rescue Exception
+      @queue_mutex.synchronize { @queue_wake_pending = false }
+      raise
     end
 
     def drain_queue
       batch = @queue_mutex.synchronize do
-        value = @queue
-        @queue = []
+        @queue_wake_pending = false
+        value = @queue.shift(16)
         value
       end
       batch.each { |client, frame| process_tool_call(client, frame) }
     rescue Exception => error
       log("UI queue failed: #{error.class}: #{error.message}")
+    ensure
+      schedule_queue if @running
     end
 
     def process_tool_call(client, frame)
@@ -683,7 +732,9 @@ module DSHSketchupBridge
     end
   end
 
-  @manager = Manager.new
+  # Reopening this module during an authorized reload must preserve the running
+  # manager, its stable instance id, worker, UI timer and observer references.
+  @manager ||= Manager.new
 
   def self.manager
     @manager
