@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-10T02:49:55+08:00",
+  "received": 96,
+  "failures": [
+
+  ],
+  "stats": {
+    "apiVersion": 1,
+    "ready": true,
+    "consumers": [
+      "verification"
+    ],
+    "dispatcher": {
+      "queued": 0,
+      "posts": 4,
+      "callbacks": 4,
+      "closed": false,
+      "errors": [
+
+      ]
+    }
+  },
+  "modelChanged": false
+}

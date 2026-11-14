@@ -1,0 +1,38 @@
+{
+  "at": "2026-11-10T02:58:06+08:00",
+  "afterBridgeStop": {
+    "apiVersion": 1,
+    "ready": true,
+    "consumers": [
+      "d5-local-proxy"
+    ],
+    "dispatcher": {
+      "queued": 0,
+      "posts": 13,
+      "callbacks": 13,
+      "closed": false,
+      "errors": [
+
+      ]
+    }
+  },
+  "eventAfterBridgeStop": true,
+  "afterEvent": {
+    "apiVersion": 1,
+    "ready": true,
+    "consumers": [
+      "d5-local-proxy"
+    ],
+    "dispatcher": {
+      "queued": 0,
+      "posts": 14,
+      "callbacks": 14,
+      "closed": false,
+      "errors": [
+
+      ]
+    }
+  },
+  "restarted": true,
+  "proxyConnected": true
+}

@@ -1,0 +1,41 @@
+{
+  "at": "2026-11-10T14:34:45+08:00",
+  "pid": 43236,
+  "phase": "connected",
+  "error": null,
+  "model": "E:\\单体模型素材\\D5Lite代理\\绑定验收\\过程\\跨模型复用_20261110.skp",
+  "managerDefined": true,
+  "events": {
+    "apiVersion": 1,
+    "ready": true,
+    "consumers": [
+      "d5-local-proxy",
+      "dsh-bridge"
+    ],
+    "dispatcher": {
+      "queued": 0,
+      "posts": 334,
+      "callbacks": 334,
+      "closed": false,
+      "errors": [
+
+      ]
+    }
+  },
+  "eventSource": [
+    "C:/Users/al765/AppData/Roaming/SketchUp/SketchUp 2024/SketchUp/Plugins/dsh_sketchup_bridge/event_service.rb",
+    20
+  ],
+  "proxySource": [
+    "C:/Users/al765/AppData/Roaming/SketchUp/SketchUp 2024/SketchUp/Plugins/zhi_d5_local_proxy.rb",
+    229
+  ],
+  "connected": true,
+  "status": {
+    "phase": "error",
+    "message": "服务连接失败，请点击连接／同步重试。",
+    "error": "D5 service connection closed",
+    "at": "2026-11-10T14:34:20+08:00"
+  },
+  "busy": false
+}
